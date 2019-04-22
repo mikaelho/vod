@@ -83,49 +83,47 @@ def prepare_for_collisions(
   
   # Take only outside pixels
   # for collision 
-  if cover == OUTLINE:
-    w, h = img_array.shape
-    new_array = np.zeros_like(img_array)
-    seen = set()
-    wave_edge = []
-    for x in (0, w-1):
-      for y in range(0, h-1):
+  w, h = img_array.shape
+  edge_array = np.zeros_like(img_array)
+  seen = set()
+  wave_edge = []
+  for x in (0, w-1):
+    for y in range(0, h-1):
+      if img_array[x,y] == 1:
+        edge_array[x,y] = 1
+      else:
+        wave_edge.append((x,y))
+      seen.add((x,y))
+  for y in (0, h-1):
+    for x in range(1, w-2):
+      if img_array[x,y] == 1:
+        edge_array[x,y] = 1
+      else:
+        wave_edge.append((x,y))
+      seen.add((x,y))
+      
+  while wave_edge:
+    new_edge = []
+    for (x,y) in wave_edge:
+      for candidate in ((x+1, y), (x-1, y), (x, y+1), (x, y-1), (x-1, y-1), (x-1, y+1), (x+1, y+1), (x+1, y-1)):
+        if (candidate[0] < 0 or
+            candidate[1] < 0 or
+            candidate[0] == img_array.shape[0] or
+            candidate[1] == img_array.shape[1] or
+            candidate in seen):
+              continue
         if img_array[x,y] == 1:
-          new_array[x,y] = 1
+          edge_array[x,y] = 1
         else:
-          wave_edge.append((x,y))
-        seen.add((x,y))
-    for y in (0, h-1):
-      for x in range(1, w-2):
-        if img_array[x,y] == 1:
-          new_array[x,y] = 1
-        else:
-          wave_edge.append((x,y))
-        seen.add((x,y))
-        
-    while wave_edge:
-      new_edge = []
-      for (x,y) in wave_edge:
-        for candidate in ((x+1, y), (x-1, y), (x, y+1), (x, y-1), (x-1, y-1), (x-1, y+1), (x+1, y+1), (x+1, y-1)):
-          if (candidate[0] < 0 or
-              candidate[1] < 0 or
-              candidate[0] == img_array.shape[0] or
-              candidate[1] == img_array.shape[1] or
-              candidate in seen):
-                continue
-          if img_array[x,y] == 1:
-            new_array[x,y] = 1
-          else:
-            new_edge.append(candidate)
-            seen.add(candidate)
-      wave_edge = new_edge
-    img_array = new_array
-
-    if debug:
-      plt.clf()
-      plt.title('Outlined')
-      plt.imshow(img_array, cmap='Greys')
-      plt.show()
+          new_edge.append(candidate)
+          seen.add(candidate)
+    wave_edge = new_edge
+    
+  if debug:
+    plt.clf()
+    plt.title('Outlined')
+    plt.imshow(edge_array, cmap='Greys')
+    plt.show()
     
   # Convert to tuples of coordinates
   # of the selected points
@@ -141,8 +139,55 @@ def prepare_for_collisions(
     ma = mask_array
     plt.scatter(ma[:,0],ma[:,1], cmap='Greys')
     plt.show()
+    
+  # Calculate normals for surface points
+  # Degrees; np.nan for non-surface points
+  normals_array = np.full_like(edge_array, np.nan, dtype=float)
+  ii = np.where(edge_array == 1)
+  edge_coords = np.array(tuple(zip(ii[1],ii[0]))).astype(int)
+  
+  w, h = edge_array.shape
+  # First iteration: rough
+  for x, y in edge_coords:
+    normal = V(Point(0,0))
+    for xd, yd in ((1, 0), (-1, 0), (0, 1), (0, -1), (-1, -1), (-1, 1), (1, 1), (1, -1)):
+      xa = x + xd
+      ya = y + yd
+      if xa >= 0 and xa < w and ya >= 0 and ya < h and img_array[ya, xa] == 1:
+        normal.x += xd
+        normal.y += yd
+    normal.magnitude = -1 # Point outward
+    normals_array[y,x] = normal.degrees
+  if debug:
+    plt.clf()
+    plt.title('Surface normals (degrees)')
+    plt.imshow(normals_array)
+    plt.colorbar()
+    plt.show()
+
+  '''
+  # Second iteration: smooth with averages
+  for x, y in mask_array:
+    total = normals_array[y,x]
+    count = 1
+    for xd, yd in ((1, 0), (-1, 0), (0, 1), (0, -1), (-1, -1), (-1, 1), (1, 1), (1, -1)):
+      xa = x + xd
+      ya = y + yd
+      if xa >= 0 and xa < w and ya >= 0 and ya < h:
+        normal = normals_array[ya,xa]
+        if not np.isnan(normal):
+          total += normal
+          count += 1
+    normals_array[y, x] = total/count
+  if debug:
+    plt.clf()
+    plt.title('As normals, smoothed')
+    plt.imshow(normals_array)
+    plt.show()
+  '''
   
   view.mask_array = mask_array
+  view.normals_array = normals_array[mask_array[:,1], mask_array[:,0]]
   view.mass = mass
   view.center_of_mass = center_of_mass
   view.angular_inertia = angular_inertia
@@ -314,14 +359,22 @@ if __name__ == '__main__':
   def control_center(view):
     first = True
     fps_label = view['fps_label']
-    frame_count = 0
+    frames = []
     start_time = time.time()
     while True:
       yield
-      frame_count += 1
-      fps = frame_count/(time.time()-start_time)
-      fps_label.text = str(fps)
+      now = time.time()
+      frames.append(now)
+      if len(frames) > 100:
+        frames.pop(0)
+      if len(frames) == 100:
+        time_for_99 = now - frames[0]
+        fps = (1/time_for_99)*99
+        fps_label.text = str(round(fps)) + ' fps'
+      separate = {}
+      delta_v = {}
       for rock in view.rocks:
+        separate[rock] = Point(0,0)
         rock.center += rock.velocity/60
         rock.rotation += rock.angular_velocity/60
         rock.transform = Transform.rotation(math.radians(rock.rotation))
@@ -334,18 +387,22 @@ if __name__ == '__main__':
           a_offset = a.center - bb.origin
           b_offset = b.center - bb.origin
           a_placed = (np.dot(
-            a.mask_array-25, 
+            a.mask_array-a.bounds.center(), 
             rotation_matrix(a.rotation)
             )+a_offset).astype(int)
           b_placed = (np.dot(
-            b.mask_array-25, 
+            b.mask_array-b.bounds.center(), 
             rotation_matrix(b.rotation)
             )+b_offset).astype(int)
             
-          collision_matrix = np.zeros(bb.size+(1,1))
-          collision_matrix[a_placed[:,0],a_placed[:,1]] = 1
-          collision_matrix[b_placed[:,0],b_placed[:,1]] += 2 #collision_matrix[b_placed[:,0],b_placed[:,1]] + 1
+          j = joint_size = bb.size+(1,1)
+          j.x, j.y = j.y, j.x
+          collision_matrix = np.zeros(joint_size)
           
+          collision_matrix[a_placed[:, 1], a_placed[:, 0]] = 1
+          collision_matrix[b_placed[:,1], b_placed[:,0]] += 2 #collision_matrix[b_placed[:,0],b_placed[:,1]] + 1
+          
+          '''
           if first:
             plt.clf()
             plt.title('Combined area')
@@ -353,9 +410,11 @@ if __name__ == '__main__':
             plt.gca().invert_yaxis()
             plt.imshow(collision_matrix, cmap='Greys')
             plt.show()
+          '''
           
           collision_matrix = np.where(collision_matrix >= 3, 1, 0)
           
+          '''
           a_c_rotated = V(Point(*a.center_of_mass))
           a_c_rotated.degrees += a.rotation
           b_c_rotated = V(Point(*b.center_of_mass))
@@ -364,6 +423,7 @@ if __name__ == '__main__':
           
           collision_matrix[a_offset[0], a_offset[1]] = 5
           collision_matrix[b_offset[0], b_offset[1]] = 5
+          '''
           
           ii = np.where(collision_matrix == 1)
           
@@ -373,25 +433,71 @@ if __name__ == '__main__':
           
             if collision_center is not None:
               
-              collision_normal = V(Point(x,y))
-              '''
-              collision_normal = V(a.center-b.center)
-              '''
+              normal_matrix = np.full(joint_size, np.nan)
+              normal_matrix[a_placed[:, 1], a_placed[:, 0]] = a.normals_array
+              
+              normal_matrix = np.where(collision_matrix == 1, normal_matrix, np.nan)
+              nf = normal_matrix.flatten()
+              nf = nf[~np.isnan(nf)]
+              
+              if len(nf) == 0:
+                collision_normal = V(b.center - a.center).degrees
+              else:
+                collision_normal =  np.average(nf) + a.rotation
+              
+              if math.isnan(collision_normal):
+                print('normal nan')
+                continue
+              
+              #collision_normal = V(Point(x,y))
+              #collision_normal = V(a.center-b.center)
               
               nii = np.where(collision_matrix == 1)
-              nii = np.array(tuple(zip(nii[0],nii[1]))).astype(int)
+              nii = np.array(tuple(zip(nii[1],nii[0]))).astype(int)
+              
+              abs_cn = abs(collision_normal)
+              delta = -(abs_cn - 90)
+              to_horizontal_degrees = math.copysign(1, collision_normal) * delta
 
-              turn_to_horizontal_matrix = rotation_matrix(-(collision_normal.degrees-90))
+              turn_to_horizontal_matrix = rotation_matrix(to_horizontal_degrees)
               turn_to_horizontal = (np.dot(
                 nii-collision_center, 
                 turn_to_horizontal_matrix
               )+collision_center).astype(int)
                 
               final_matrix = np.zeros(bb.size+(1,1))
-              final_matrix[turn_to_horizontal[:,0],turn_to_horizontal[:,1]] = 1
+              final_matrix[turn_to_horizontal[:,1],turn_to_horizontal[:,0]] = 1
 
-              final_matrix = final_matrix[np.any(final_matrix, axis=1)] #.shape[0]
+              overlap_distance = final_matrix[np.any(final_matrix, axis=1)].shape[0]/2
+              if math.isnan(overlap_distance):
+                print('dist nan')
+                continue
               
+              separate_a = V(Point())
+              separate_a.degrees = collision_normal
+              separate_a.magnitude = -overlap_distance
+              
+              separate_b = V(Point())
+              separate_b.degrees = collision_normal
+              separate_b.magnitude = overlap_distance
+              
+              separate[a] += separate_a
+              separate[b] += separate_b
+              
+              delta_v[a] = delta_v.setdefault(a, Point()) + b.velocity
+              delta_v[b] = delta_v.setdefault(b, Point()) + a.velocity
+              
+              '''
+              a.velocity, b.velocity = b.velocity, a.velocity
+              '''
+              '''
+              a_impact = a.velocity*a.mass/b.mass
+              b_impact = b.velocity*b.mass/a.mass
+              delta_v[a] += b_impact - a_impact
+              delta_v[b] += a_impact - b_impact
+              '''
+              
+              '''
               a_ang = V(collision_center - a.center)
               a_ang.degrees -= 90
               a_ang.magnitude = (math.radians(-a.angular_velocity)/(2*math.pi))*a_ang.magnitude
@@ -405,7 +511,7 @@ if __name__ == '__main__':
               
               a.velocity += b_vel * b.mass / a.mass * .01
               b.velocity += a_vel * a.mass / b.mass * .01
-              
+              '''
               
               '''
               vaf, vbf, waf, wbf =  collision_response(
@@ -437,18 +543,34 @@ if __name__ == '__main__':
               '''
               if a.marker.superview is None:
                 view.add_subview(a.marker)
-              a.marker.normal = Point(*collision_normal)
+              a.marker.normal = V(Point(100,100))
+              a.marker.normal.degrees = collision_normal
               #print(a.marker.normal)
-              a.marker.center = bb.origin + collision_center
+              a.marker.center = bb.origin + Point(collision_center.y, collision_center.x)
               a.marker.hidden = False
               a.marker.set_needs_display()
               '''
-
-  
               
               if first:
                 first = False
-                print(collision_normal.degrees)
+                
+                _snapshot(view).show()
+
+                plt.clf()
+                plt.title('Mask array, unrotated')
+                plt.subplot().set_aspect('equal')
+                plt.gca().invert_yaxis()
+                ma = a.mask_array
+                plt.scatter(ma[:,0],ma[:,1], cmap='Greys')
+                plt.show()
+                
+                plt.clf()
+                plt.title('Normals')
+                plt.subplot().set_aspect('equal')
+                plt.gca().invert_yaxis()
+                plt.imshow(normal_matrix)
+                plt.colorbar()
+                plt.show()
                 
                 plt.clf()
                 plt.title('Collision area')
@@ -479,6 +601,10 @@ if __name__ == '__main__':
                 plt.plot(np.unique(ii[1]), np.poly1d(np.polyfit(ii[1], ii[0], 1))(np.unique(ii[1])))
                 plt.show()
                 '''
+      for rock in view.rocks:
+        rock.center += separate[rock]
+        if rock in delta_v:
+          rock.velocity = delta_v[rock]
   
   @script
   def move_around(view):
@@ -525,7 +651,8 @@ if __name__ == '__main__':
       else 'other'
     )
     
-    prepare_for_collisions(rock, cover=FILL)
+    prepare_for_collisions(rock, cover=OUTLINE, debug=first)
+    first = False
     
     target = Point(
       randint(r,w-r), randint(r,h-r))
@@ -541,19 +668,3 @@ if __name__ == '__main__':
   ))
 
   rock_on(v)
-
-  
-  a = np.array((
-    [0,0,0,0],
-    [0,1,1,0],
-    [0,1,1,0],
-    [0,1,1,0]))
-    
-  b = np.array((
-    [0,0,0,0],
-    [0,0,0,0],
-    [0,0,0,0],
-    [0,0,0,0]))
-    
-  #print(center_of_mass(a))
-    
