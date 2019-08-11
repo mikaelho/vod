@@ -1,4 +1,5 @@
 #coding: utf-8
+import math
 from ui import *
 
 #from base import *
@@ -10,6 +11,7 @@ class Shape(View):
     super().__init__(**kwargs)
     self.frame = (0,0,1000,1000)
     self.bounds = (-500,-500,1000,1000)
+    self._rotation = 0
     #self.texture.filtering_mode = FILTERING_NEAREST
     
   def get_path(self):
@@ -23,10 +25,21 @@ class Shape(View):
     p = self.get_path()
     set_color('white')
     p.stroke()
+    set_color('black')
+    p.fill()
     
   def hit(self, position):
     local_position = position - self.position
     return self.path.hit_test(*local_position)
+  
+  @property  
+  def rotation(self):
+    return self._rotation
+    
+  @rotation.setter
+  def rotation(self, value):
+    self._rotation = value
+    self.transform = Transform.rotation(math.radians(value))
     
 
 class Ship(Shape):

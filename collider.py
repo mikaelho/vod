@@ -30,6 +30,7 @@ def prepare_for_collisions(
   view, image=None,
   alpha=None, color=None, cover=OUTLINE, 
   density=1,
+  match_center=True,
   debug=False):
   img = image or _snapshot(view)
   if debug:
@@ -71,15 +72,7 @@ def prepare_for_collisions(
     
   # Mass of object
   mass = np.sum(img_array) * density
-  center_of_mass = V(Point(*array_center_of_mass(img_array)) - view.center)
-  
-  # Angular inertia
-  # (mass multiplied by the distance from
-  # rotation axis, squared)
-  center = view.bounds.center()
-  temp_ii = np.where(img_array == 1)
-  temp_array = np.array(tuple(zip(temp_ii[1],temp_ii[0]))).astype(int)
-  angular_inertia = np.sum([abs(Point(x,y)-center)**2 * density for (x,y) in temp_array])
+  #center_of_mass = V(Point(*array_center_of_mass(img_array)) - view.center)
   
   # Take only outside pixels
   # for collision 
@@ -128,7 +121,26 @@ def prepare_for_collisions(
   # Convert to tuples of coordinates
   # of the selected points
   ii = np.where(img_array == 1)
+  
+  # Center of mass
+  center_of_mass = V(Point(
+    np.average(ii[1]), 
+    np.average(ii[0])))
+    
+  # Angular inertia
+  # (mass multiplied by the distance from
+  # rotation axis, squared)
+  '''
+  center = view.bounds.center()
+  temp_ii = np.where(img_array == 1)
+  temp_array = np.array(tuple(zip(temp_ii[1],temp_ii[0]))).astype(int)
+  angular_inertia = np.sum([abs(Point(x,y)-center)**2 * density for (x,y) in temp_array])
+  '''
+  
   mask_array = np.array(tuple(zip(ii[1],ii[0]))).astype(int)
+  
+  angular_inertia = np.sum([abs(Point(x,y)-center_of_mass)**2 * density for (x,y) in mask_array])
+  
   if debug:
     plt.clf()
     plt.title('As coordinates')
@@ -147,7 +159,6 @@ def prepare_for_collisions(
   edge_coords = np.array(tuple(zip(ii[1],ii[0]))).astype(int)
   
   w, h = edge_array.shape
-  # First iteration: rough
   for x, y in edge_coords:
     normal = V(Point(0,0))
     for xd, yd in ((1, 0), (-1, 0), (0, 1), (0, -1), (-1, -1), (-1, 1), (1, 1), (1, -1)):
@@ -164,33 +175,363 @@ def prepare_for_collisions(
     plt.imshow(normals_array)
     plt.colorbar()
     plt.show()
-
-  '''
-  # Second iteration: smooth with averages
-  for x, y in mask_array:
-    total = normals_array[y,x]
-    count = 1
-    for xd, yd in ((1, 0), (-1, 0), (0, 1), (0, -1), (-1, -1), (-1, 1), (1, 1), (1, -1)):
-      xa = x + xd
-      ya = y + yd
-      if xa >= 0 and xa < w and ya >= 0 and ya < h:
-        normal = normals_array[ya,xa]
-        if not np.isnan(normal):
-          total += normal
-          count += 1
-    normals_array[y, x] = total/count
-  if debug:
-    plt.clf()
-    plt.title('As normals, smoothed')
-    plt.imshow(normals_array)
-    plt.show()
-  '''
   
   view.mask_array = mask_array
   view.normals_array = normals_array[mask_array[:,1], mask_array[:,0]]
   view.mass = mass
   view.center_of_mass = center_of_mass
   view.angular_inertia = angular_inertia
+  
+def check_and_handle_collisions(views, first):
+  separate = {}
+  delta_v = {}
+  if len(delta_v) > 0:
+    raise Exception('problem')
+  
+  # Check for edge collisions
+  for view in views:
+    separate[view] = V(Point(0,0))
+    view.center += view.velocity/60
+    view.rotation += view.angular_velocity/60
+    view.transform = Transform.rotation(math.radians(view.rotation))
+    view.marker.hidden = True
+    view.visualize = None
+    hit_the_edge(view)
+    #find_scripter_instance(view).cancel(rock.mover)
+    
+  # For every unique combination of views
+  for a,b in combinations(views, 2):
+    
+    # If bounding boxes overlap
+    if a.frame.intersects(b.frame):
+      
+      # Box covering frames of both bounding
+      # boxes
+      bb = a.frame.union(b.frame).inset(-10,-10)
+      j = joint_size = Size(*(max(bb.size)+1,)*2)
+      j.x, j.y = j.y, j.x
+      
+      # Rotate masks to match current view
+      # rotation and place
+      a_offset = a.center - bb.origin
+      b_offset = b.center - bb.origin
+      a_placed = (np.dot(
+        a.mask_array-a.bounds.center(), 
+        rotation_matrix(a.rotation)
+        )+a_offset).astype(int)
+      b_placed = (np.dot(
+        b.mask_array-b.bounds.center(), 
+        rotation_matrix(b.rotation)
+        )+b_offset).astype(int)
+        
+      # Use rotated masks to write values
+      # into shared matrix
+      # Overlapping area, if any, has
+      # summed value of 1+2=3
+      collision_matrix = np.zeros(joint_size)
+      collision_matrix[a_placed[:, 1], a_placed[:, 0]] = 1
+      collision_matrix[b_placed[:,1], b_placed[:,0]] += 2
+      
+      '''
+      if first:
+        plt.clf()
+        plt.title('Combined area')
+        plt.subplot().set_aspect('equal')
+        plt.gca().invert_yaxis()
+        plt.imshow(collision_matrix, cmap='Greys')
+        plt.show()
+      '''
+      
+      #collision_matrix = np.where(collision_matrix >= 3, 1, 0)
+      
+      # Get coordinates of overlapping points
+      
+      # If there is overlap,
+      # resolve collision
+      #if len(ii[0]) > 0:
+      if np.any(collision_matrix == 3):
+      
+        #ii = np.where(collision_matrix == 3)
+        nii = np.where(collision_matrix == 3)
+        #print(np.average(nii[0]), np.average(nii[1]))
+        
+        collision_center = V(Point(
+          np.average(nii[1]), 
+          np.average(nii[0])))
+          
+        # Collision normal (edge of b)
+          
+        normal_matrix = np.full(joint_size, np.nan)
+        normal_matrix[b_placed[:, 1], b_placed[:, 0]] = b.normals_array
+        
+        normal_matrix = np.where(collision_matrix == 3, normal_matrix, np.nan)
+        nf = normal_matrix.flatten()
+        nf = nf[~np.isnan(nf)]
+        
+        if len(nf) == 0:
+          collision_normal = V(a.center - b.center).degrees
+        else:
+          collision_normal =  np.average(nf) + a.rotation
+        
+        #collision_normal = V(Point(x,y))
+        #collision_normal = V(a.center-b.center)
+        
+        nii = np.where(collision_matrix == 3)
+        nii = np.array(tuple(zip(nii[1],nii[0]))).astype(int)
+        
+        abs_cn = abs(collision_normal)
+        delta = -(abs_cn - 90)
+        to_horizontal_degrees = math.copysign(1, collision_normal) * delta
+
+        turn_to_horizontal_matrix = rotation_matrix(to_horizontal_degrees)
+        turn_to_horizontal = (np.dot(
+          nii-collision_center, 
+          turn_to_horizontal_matrix
+        )+collision_center).astype(int)
+          
+        final_matrix = np.zeros(joint_size)
+        final_matrix[turn_to_horizontal[:,1],turn_to_horizontal[:,0]] = 1
+
+        overlap_distance = final_matrix[np.any(final_matrix, axis=1)].shape[0]/2
+        
+        separate_a = V(Point())
+        separate_a.magnitude = overlap_distance
+        separate_a.degrees = collision_normal
+        
+        separate_b = V(Point())
+        separate_b.magnitude = overlap_distance
+        separate_b.degrees = collision_normal + 180
+        
+        separate[a] += separate_a
+        separate[b] += separate_b
+        
+        point_p = bb.origin + Point(*collision_center)
+        
+        # Vectors to collision point
+        r_ap = V(point_p - a.center)
+        r_bp = V(point_p - b.center)
+        
+        # Center of mass velocity
+        v_a1 = a.velocity
+        v_b1 = b.velocity
+        
+        # Rotational velocity at
+        # collision point (ccw)
+        v_rpa = V(Point(*r_ap))
+        v_rpa.degrees -= 90
+        v_rpa.magnitude = (
+          (math.radians(-a.angular_velocity)/
+          (2*math.pi))*2*math.pi*r_ap.magnitude)
+
+        #print(a.angular_velocity, v_rpa.magnitude)
+        #circumference = 2*math.pi*r_ap.magnitude
+        #print('ref', 45, (math.pi/4)/(2*math.pi)*circumference)
+        
+        v_rpb = V(Point(*r_bp))
+        v_rpb.degrees -= 90
+        v_rpb.magnitude = (
+          (math.radians(-b.angular_velocity)/
+          (2*math.pi))*2*math.pi*r_bp.magnitude)
+        
+        # Total vector at collision point
+        v_ap1 = v_a1 + v_rpa
+        v_bp1 = v_b1 + v_rpb    
+        
+        # Difference at collision point
+        v_ab1 = v_ap1 - v_bp1
+        
+        # Mass
+        m_a = a.mass
+        m_b = b.mass
+        
+        # Angular inertia
+        I_a = math.sqrt(a.angular_inertia)
+        I_b = math.sqrt(b.angular_inertia)
+        
+        # Restitution
+        # 0 - inelastic
+        # 1 - perfectly elastic
+        e = 0.5
+        
+        # Collision normal (edge of b)
+        n = V(Point(1,0))
+        n.degrees = -collision_normal
+        
+        collision_a = v_bp1 * m_b/m_a
+        collision_b = v_ap1 * m_a/m_b
+        
+        # Coefficient j
+        '''
+        # j_top
+        # −(1 + e) vab1 · n
+        j_top = -(1+e) * np.dot(v_ab1, n)
+
+        # j_bottom
+        # 1⁄ma + 1⁄mb + (rap × n)2 ⁄ Ia + (rbp × n)2 ⁄ Ib
+        j_bottom = 1/m_a + 1/m_b + math.pow(np.cross(r_ap, n), 2) / I_a + math.pow(np.cross(r_bp, n), 2) / I_b
+
+        j = j_top/j_bottom
+        '''
+        '''
+        # Apply collision relative to masses
+        d_a = V(Point())
+        d_a.magnitude = j/m_a
+        d_a.degrees = n.degrees
+        delta_v[a] = delta_v.setdefault(a, a.velocity) + d_a
+        d_b = V(Point())
+        d_b.magnitude = j/m_b
+        d_b.degrees = n.degrees - 180
+        delta_v[b] = delta_v.setdefault(b, b.velocity) + d_b
+        '''
+        '''
+        if first:
+          a.visualize = {
+            'collision_point': r_ap,
+            'rotation_vector': v_rpa,
+            'collision_vector': v_ap1
+          }
+          a.bring_to_front()
+          a.set_needs_display()
+          b.visualize = {
+            'collision_point': r_bp,
+            'rotation_vector': v_rpb,
+            'collision_vector': v_bp1
+          }
+          b.set_needs_display()
+        '''
+        
+        '''
+        a_share = a.mass/(a.mass+b.mass)
+        b_share = b.mass/(a.mass+b.mass)
+        
+        delta_v[a] = delta_v.setdefault(a, Point()) + a.velocity*b_share + b.velocity*b_share
+        delta_v[b] = delta_v.setdefault(b, Point()) + a.velocity*a_share + b.velocity*a_share
+        '''
+        '''
+        a.velocity, b.velocity = b.velocity, a.velocity
+        '''
+        '''
+        a_impact = a.velocity*a.mass/b.mass
+        b_impact = b.velocity*b.mass/a.mass
+        delta_v[a] += b_impact - a_impact
+        delta_v[b] += a_impact - b_impact
+        '''
+        
+        '''
+        a_ang = V(collision_center - a.center)
+        a_ang.degrees -= 90
+        a_ang.magnitude = (math.radians(-a.angular_velocity)/(2*math.pi))*a_ang.magnitude
+        
+        b_ang = V(collision_center - b.center)
+        b_ang.degrees -= 90
+        b_ang.magnitude = (math.radians(-b.angular_velocity)/(2*math.pi))*b_ang.magnitude
+        
+        a_vel = V(Point(*a.velocity))
+        b_vel = V(Point(*b.velocity))
+        
+        a.velocity += b_vel * b.mass / a.mass * .01
+        b.velocity += a_vel * a.mass / b.mass * .01
+        '''
+        
+        '''
+        vaf, vbf, waf, wbf =  collision_response(
+          a.mass,
+          b.mass,
+          a.angular_inertia,
+          b.angular_inertia,
+          collision_center - a.center,
+          collision_center - b.center,
+          collision_normal,
+          a.velocity,
+          b.velocity,
+          a_ang,
+          b_ang)
+        '''
+        '''
+        a.velocity = vaf
+        b.velocity = vbf
+
+        a.angular_velocity = (waf.magnitude/(2*math.pi*abs(collision_center-a.center)))*360
+        b.angular_velocity = (wbf.magnitude/(2*math.pi*abs(collision_center-b.center)))*360
+        '''
+        '''
+        scr = find_scripter_instance(view)
+        scr.cancel(a.mover)
+        scr.cancel(b.mover)
+        '''
+        
+        '''
+        if a.marker.superview is None:
+          view.add_subview(a.marker)
+        a.marker.normal = V(Point(100,100))
+        a.marker.normal.degrees = collision_normal
+        #print(a.marker.normal)
+        a.marker.center = bb.origin + Point(collision_center.y, collision_center.x)
+        a.marker.hidden = False
+        a.marker.set_needs_display()
+        '''
+        
+        if first:
+          first = False
+          
+          _snapshot(a.superview).show()
+
+          '''
+          plt.clf()
+          plt.title('Mask array, unrotated')
+          plt.subplot().set_aspect('equal')
+          plt.gca().invert_yaxis()
+          ma = a.mask_array
+          plt.scatter(ma[:,0],ma[:,1], cmap='Greys')
+          plt.show()
+          
+          plt.clf()
+          plt.title('Normals')
+          plt.subplot().set_aspect('equal')
+          plt.gca().invert_yaxis()
+          plt.imshow(normal_matrix)
+          plt.colorbar()
+          plt.show()
+          '''
+          plt.clf()
+          plt.title('Collision area')
+          plt.subplot().set_aspect('equal')
+          plt.gca().invert_yaxis()
+          plt.imshow(collision_matrix, cmap='Greys')
+          plt.show()
+          '''
+          plt.clf()
+          plt.title('Rotated to horizontal')
+          plt.subplot().set_aspect('equal')
+          plt.gca().invert_yaxis()
+          plt.imshow(final_matrix, cmap='Greys')
+          plt.show()
+          '''
+          '''
+          ma = ii
+          plt.scatter(ii[0],ii[1], cmap='Greys')
+          plt.plot(np.unique(ii[0]), np.poly1d(np.polyfit(ii[0], ii[1], 1))(np.unique(ii[0])))
+          plt.show()
+
+          plt.clf()
+          plt.title('Collision area 2')
+          plt.subplot().set_aspect('equal')
+          plt.gca().invert_yaxis()
+          ma = ii
+          plt.scatter(ii[1],ii[0], cmap='Greys')
+          plt.plot(np.unique(ii[1]), np.poly1d(np.polyfit(ii[1], ii[0], 1))(np.unique(ii[1])))
+          plt.show()
+          '''
+  for view in views:
+    separate_vector = separate[view]
+    if separate_vector.magnitude > 0:
+      view.center += separate_vector
+      #print(separate_vector)
+    #if view in delta_v:
+      #view.velocity = delta_v[view]
+      #print(delta_v[view])
+      
+  return first
 
 def collision_response(
   ma, mb,    # masses
@@ -202,6 +543,13 @@ def collision_response(
   e=.1        # restitution
   ):
   "Calculates velocities after a 2D collision."
+  
+  #j_upper = -(1+e) * 
+  '''
+  −(1 + e) vab1 · n
+  divided by
+  1⁄ma + 1⁄mb + (rap × n)2 ⁄ Ia + (rbp × n)2 ⁄ Ib
+  '''
 
   k = (
     1/(ma*ma)+ 2/(ma*mb) +1/(mb*mb) - ra.x*ra.x/(ma*Ia) - rb.x*rb.x/(ma*Ib)  - ra.y*ra.y/(ma*Ia)
@@ -280,6 +628,7 @@ class RandomShape(View):
     self.mask_array = None
     self.rotation = 0
     self.colliding = False
+    self.visualize = None
     self.width = self.height = 2*r
     center = Point(r,r)
     p = self.path = Path()
@@ -306,11 +655,80 @@ class RandomShape(View):
     '''
     #self.add_subview(self.marker)
   
+  nice_colors = ['red','green', 'yellowgreen', 'orange', 'orangered', 'violet']
+  
   def draw(self):
     set_color('darkblue')
     self.path.fill()
     set_color(self.highlight if self.colliding else self.regular)
     self.path.stroke()
+    
+    vector_color = choice(self.nice_colors)
+    semi_color = with_alpha(vector_color, 0.5)
+    
+    if self.visualize is not None:
+      c = self.bounds.center()
+      v = self.visualize
+      c_p = collision_point = v['collision_point']
+      rotation_vector = v['rotation_vector']
+      collision_vector = v['collision_vector']
+      
+      p = Path()
+      p.move_to(*(c+c_p))
+      p.add_arc(
+        c.x, c.y, c_p.magnitude,
+        c_p.radians, 
+        math.radians(c_p.degrees+self.angular_velocity),
+        (self.angular_velocity > 0))
+      #p.add_arc(c.x, c.y, c_p.magnitude, c_p.radians, math.radians(c_p.degrees+45))
+      set_color(semi_color)
+      p.stroke()
+      
+      '''
+      self.draw_arrow(
+        c, 
+        collision_point, 
+        vector_color)
+      '''
+      self.draw_arrow(
+        c-self.velocity,
+        self.velocity,
+        semi_color)
+      '''
+      self.draw_arrow(
+        c+collision_point,
+        rotation_vector,
+        vector_color)
+      '''
+      self.draw_arrow(
+        c+collision_point,
+        collision_vector,
+        vector_color,
+        2)
+    '''
+    a.visualize = {
+      'collision_point': r_ap,
+      'rotation_vector': v_rpa,
+      'collision_vector': v_ap1
+    }
+    '''
+    
+  def draw_arrow(self, start, vector, color='white', thickness=1, end_size=5):
+    v = V(Point(*vector))
+    p = Path()
+    p.move_to(*start)
+    p.line_to(*(start+vector))
+    v.magnitude = end_size
+    v.degrees += 135
+    p.line_to(*(start+vector+v))
+    v.degrees += 90
+    p.move_to(*(start+vector))
+    p.line_to(*(start+vector+v))
+    set_color(color)
+    p.line_width = thickness
+    p.line_cap_style = LINE_CAP_ROUND
+    p.line_join_style = LINE_JOIN_ROUND
+    p.stroke()
 
 
 class NormalMarker(View):
@@ -358,6 +776,7 @@ if __name__ == '__main__':
   @script
   def control_center(view):
     first = True
+    second = True
     fps_label = view['fps_label']
     frames = []
     start_time = time.time()
@@ -371,240 +790,11 @@ if __name__ == '__main__':
         time_for_99 = now - frames[0]
         fps = (1/time_for_99)*99
         fps_label.text = str(round(fps)) + ' fps'
-      separate = {}
-      delta_v = {}
-      for rock in view.rocks:
-        separate[rock] = Point(0,0)
-        rock.center += rock.velocity/60
-        rock.rotation += rock.angular_velocity/60
-        rock.transform = Transform.rotation(math.radians(rock.rotation))
-        rock.marker.hidden = True
-        hit_the_edge(rock)
-        #find_scripter_instance(view).cancel(rock.mover)
-      for a,b in combinations(view.rocks, 2):
-        if a.frame.intersects(b.frame):
-          bb = a.frame.union(b.frame).inset(-10,-10)
-          a_offset = a.center - bb.origin
-          b_offset = b.center - bb.origin
-          a_placed = (np.dot(
-            a.mask_array-a.bounds.center(), 
-            rotation_matrix(a.rotation)
-            )+a_offset).astype(int)
-          b_placed = (np.dot(
-            b.mask_array-b.bounds.center(), 
-            rotation_matrix(b.rotation)
-            )+b_offset).astype(int)
-            
-          j = joint_size = bb.size+(1,1)
-          j.x, j.y = j.y, j.x
-          collision_matrix = np.zeros(joint_size)
-          
-          collision_matrix[a_placed[:, 1], a_placed[:, 0]] = 1
-          collision_matrix[b_placed[:,1], b_placed[:,0]] += 2 #collision_matrix[b_placed[:,0],b_placed[:,1]] + 1
-          
-          '''
-          if first:
-            plt.clf()
-            plt.title('Combined area')
-            plt.subplot().set_aspect('equal')
-            plt.gca().invert_yaxis()
-            plt.imshow(collision_matrix, cmap='Greys')
-            plt.show()
-          '''
-          
-          collision_matrix = np.where(collision_matrix >= 3, 1, 0)
-          
-          '''
-          a_c_rotated = V(Point(*a.center_of_mass))
-          a_c_rotated.degrees += a.rotation
-          b_c_rotated = V(Point(*b.center_of_mass))
-          b_c_rotated.degrees += b.rotation
-          x,y = (a.center + a_c_rotated) - (b.center + b_c_rotated)
-          
-          collision_matrix[a_offset[0], a_offset[1]] = 5
-          collision_matrix[b_offset[0], b_offset[1]] = 5
-          '''
-          
-          ii = np.where(collision_matrix == 1)
-          
-          if len(ii[0]) > 0:
-          
-            collision_center = Point(*array_center_of_mass(collision_matrix))
-          
-            if collision_center is not None:
-              
-              normal_matrix = np.full(joint_size, np.nan)
-              normal_matrix[a_placed[:, 1], a_placed[:, 0]] = a.normals_array
-              
-              normal_matrix = np.where(collision_matrix == 1, normal_matrix, np.nan)
-              nf = normal_matrix.flatten()
-              nf = nf[~np.isnan(nf)]
-              
-              if len(nf) == 0:
-                collision_normal = V(b.center - a.center).degrees
-              else:
-                collision_normal =  np.average(nf) + a.rotation
-              
-              if math.isnan(collision_normal):
-                print('normal nan')
-                continue
-              
-              #collision_normal = V(Point(x,y))
-              #collision_normal = V(a.center-b.center)
-              
-              nii = np.where(collision_matrix == 1)
-              nii = np.array(tuple(zip(nii[1],nii[0]))).astype(int)
-              
-              abs_cn = abs(collision_normal)
-              delta = -(abs_cn - 90)
-              to_horizontal_degrees = math.copysign(1, collision_normal) * delta
-
-              turn_to_horizontal_matrix = rotation_matrix(to_horizontal_degrees)
-              turn_to_horizontal = (np.dot(
-                nii-collision_center, 
-                turn_to_horizontal_matrix
-              )+collision_center).astype(int)
-                
-              final_matrix = np.zeros(bb.size+(1,1))
-              final_matrix[turn_to_horizontal[:,1],turn_to_horizontal[:,0]] = 1
-
-              overlap_distance = final_matrix[np.any(final_matrix, axis=1)].shape[0]/2
-              if math.isnan(overlap_distance):
-                print('dist nan')
-                continue
-              
-              separate_a = V(Point())
-              separate_a.degrees = collision_normal
-              separate_a.magnitude = -overlap_distance
-              
-              separate_b = V(Point())
-              separate_b.degrees = collision_normal
-              separate_b.magnitude = overlap_distance
-              
-              separate[a] += separate_a
-              separate[b] += separate_b
-              
-              delta_v[a] = delta_v.setdefault(a, Point()) + b.velocity
-              delta_v[b] = delta_v.setdefault(b, Point()) + a.velocity
-              
-              '''
-              a.velocity, b.velocity = b.velocity, a.velocity
-              '''
-              '''
-              a_impact = a.velocity*a.mass/b.mass
-              b_impact = b.velocity*b.mass/a.mass
-              delta_v[a] += b_impact - a_impact
-              delta_v[b] += a_impact - b_impact
-              '''
-              
-              '''
-              a_ang = V(collision_center - a.center)
-              a_ang.degrees -= 90
-              a_ang.magnitude = (math.radians(-a.angular_velocity)/(2*math.pi))*a_ang.magnitude
-              
-              b_ang = V(collision_center - b.center)
-              b_ang.degrees -= 90
-              b_ang.magnitude = (math.radians(-b.angular_velocity)/(2*math.pi))*b_ang.magnitude
-              
-              a_vel = V(Point(*a.velocity))
-              b_vel = V(Point(*b.velocity))
-              
-              a.velocity += b_vel * b.mass / a.mass * .01
-              b.velocity += a_vel * a.mass / b.mass * .01
-              '''
-              
-              '''
-              vaf, vbf, waf, wbf =  collision_response(
-                a.mass,
-                b.mass,
-                a.angular_inertia,
-                b.angular_inertia,
-                collision_center - a.center,
-                collision_center - b.center,
-                collision_normal,
-                a.velocity,
-                b.velocity,
-                a_ang,
-                b_ang)
-              '''
-              '''
-              a.velocity = vaf
-              b.velocity = vbf
-
-              a.angular_velocity = (waf.magnitude/(2*math.pi*abs(collision_center-a.center)))*360
-              b.angular_velocity = (wbf.magnitude/(2*math.pi*abs(collision_center-b.center)))*360
-              '''
-              '''
-              scr = find_scripter_instance(view)
-              scr.cancel(a.mover)
-              scr.cancel(b.mover)
-              '''
-              
-              '''
-              if a.marker.superview is None:
-                view.add_subview(a.marker)
-              a.marker.normal = V(Point(100,100))
-              a.marker.normal.degrees = collision_normal
-              #print(a.marker.normal)
-              a.marker.center = bb.origin + Point(collision_center.y, collision_center.x)
-              a.marker.hidden = False
-              a.marker.set_needs_display()
-              '''
-              
-              if first:
-                first = False
-                
-                _snapshot(view).show()
-
-                plt.clf()
-                plt.title('Mask array, unrotated')
-                plt.subplot().set_aspect('equal')
-                plt.gca().invert_yaxis()
-                ma = a.mask_array
-                plt.scatter(ma[:,0],ma[:,1], cmap='Greys')
-                plt.show()
-                
-                plt.clf()
-                plt.title('Normals')
-                plt.subplot().set_aspect('equal')
-                plt.gca().invert_yaxis()
-                plt.imshow(normal_matrix)
-                plt.colorbar()
-                plt.show()
-                
-                plt.clf()
-                plt.title('Collision area')
-                plt.subplot().set_aspect('equal')
-                plt.gca().invert_yaxis()
-                plt.imshow(collision_matrix, cmap='Greys')
-                plt.show()
-                
-                plt.clf()
-                plt.title('Rotated to horizontal')
-                plt.subplot().set_aspect('equal')
-                plt.gca().invert_yaxis()
-                plt.imshow(final_matrix, cmap='Greys')
-                plt.show()
-                
-                '''
-                ma = ii
-                plt.scatter(ii[0],ii[1], cmap='Greys')
-                plt.plot(np.unique(ii[0]), np.poly1d(np.polyfit(ii[0], ii[1], 1))(np.unique(ii[0])))
-                plt.show()
-
-                plt.clf()
-                plt.title('Collision area 2')
-                plt.subplot().set_aspect('equal')
-                plt.gca().invert_yaxis()
-                ma = ii
-                plt.scatter(ii[1],ii[0], cmap='Greys')
-                plt.plot(np.unique(ii[1]), np.poly1d(np.polyfit(ii[1], ii[0], 1))(np.unique(ii[1])))
-                plt.show()
-                '''
-      for rock in view.rocks:
-        rock.center += separate[rock]
-        if rock in delta_v:
-          rock.velocity = delta_v[rock]
+      first = check_and_handle_collisions(view.rocks, first)
+      if (not first) and second:
+        second = False
+        #_snapshot(view).show()
+        
   
   @script
   def move_around(view):
@@ -636,7 +826,7 @@ if __name__ == '__main__':
   
   w,h = get_screen_size()
   first = True
-  for _ in range(20):
+  for _ in range(25):
     c = RandomShape()
     c.center = Point(
       randint(r,w-r), randint(r,h-r))

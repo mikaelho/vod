@@ -2,21 +2,21 @@
 
 import random, uuid
 
-from scripter import *
+#from scripter import *
 from ui import *
-from scene import *
+#from scene import *
 
 import objects, tracks
-from config import *
+#from config import *
 
-#from space import *
+from spacescene import *
 
 class Player():
   
-  def __init__(self):
+  def __init__(self, name, ship):
     self.id = uuid.uuid4()
-    self.name = 'No name'
-    self.ship = None
+    self.name = name
+    self.ship = ship
     self.slots = 0
     self.track = None
     self.gear = []
@@ -61,7 +61,7 @@ class LocalHuman(Player):
   control_size = 50
   #total_path = []
   #current_fixed = 1
-  thrusts = [Vector(0,0), Vector(0,0), Vector(0,0)]
+  thrusts = [Point(0,0), Point(0,0)]
   thrust_origins = [0,0]
   
   def add_plan(self, space=None):
@@ -70,46 +70,6 @@ class LocalHuman(Player):
     self.available_thrust = [self.ship.effective_thrust, self.ship.effective_thrust]
     self.plan = space.scene.update_plan(self, self.available_thrust)
     #self.game.hotspots.append(self)
-        
-  def hit_test(self, touches, touch):
-    if len(touches) == 1:
-      local_point = self.plan.point_from_scene(touch.location)
-      for i in range(len(self.thrust_origins)):
-        print('th', self.thrust_origins[i], self.thrusts[i+1])
-        control_origin = Vector(self.thrust_origins[i] + self.thrusts[i+1])
-        print(local_point, control_origin)
-        if control_origin.distance_to(local_point) < self.control_size/2:
-          print('yes')
-          self.drag_thrust = i+1
-          return self
-    return None
-    
-  def touch_moved(self, touches, touch):
-    if len(touches) == 1:
-      local_point = self.plan.point_from_scene(touch.location)
-      previous_local_point = self.plan.point_from_scene(touch.prev_location)
-      i = self.drag_thrust
-      self.thrusts[i] += local_point - previous_local_point
-      self.thrusts[i].magnitude = min(self.available_thrust[i-1], self.thrusts[i].magnitude)
-      self.plan.remove_from_parent()
-      self.add_plan()
-
-    
-    '''
-    self.space = space
-    self.total_path.append(self.ship.position)
-    self.total_path.append(self.ship.position + self.ship.velocity)
-
-    self.trajectory = None
-    self.controls = []
-    self.available_thrust = [self.ship.effective_thrust, self.ship.effective_thrust]
-    for i in range(3):
-      control = TrajectoryControl(i, self)
-      self.controls.append(control)
-      space.add_subview(control)
-    
-    self.update_total_path()
-    '''
     
   def update_thrusts(self, step, delta):
     self.thrusts[step] += delta
@@ -190,19 +150,42 @@ class Game():
         pass
   '''
   
-  def __init__(self, player, delegate):
-    ''' Initialization of a Game object immediately starts looking for other players.
-    '''
-    self.delegate = delegate
-    self.track = None
+  def __init__(self, superview, player):
+    #self.delegate = delegate
+    self.track = tracks.Open_Range
+    self.local_player = player
+    self.superview = superview
     self.players = { player.id: player }
     self.buoys = []
-    self.local_player = player
-    self._random_numbers = None
+    #self._random_numbers = None
+    
+  def start(self):
+    self.track_setup()
+    self.space.start_the_show(
+      self.player_list)
+    
+  def track_setup(self):
+    b = Background(center=(0,0))
+    self.superview.add_subview(b)
+    
+    self.space = Space(
+      background=b,
+      player=self.local_player, frame=self.superview.bounds,
+      flex='WH')
+    self.superview.add_subview(self.space)
+    
+    self.track.set_ship_starting_vectors(self)
+    for player in self.players.values():
+      self.space.add_subview(player.ship)
+      player.ship.touch_enabled = False
     
   @property
   def player_list(self):
     return list(self.players.values())
+    
+  @property
+  def players_in_order(self):
+    return [self.players[id] for id in sorted(self.players)]
     
   def player_found(self, player):
     self.players[player.id] = player
@@ -252,7 +235,7 @@ class Game():
 
 class SoloGame(Game):
   
-  robot_names = ['Nice Robby', 'Nasty Robot', 'Nuts & Bolts', '001010111', 'Mr. Cranky', 'Metal Master']
+  robot_names = ['Nice Robby', 'Nasty Circuit', 'Nuts & Bolts', '001010111', 'Mr. Cranky', 'Metal Master']
   
   def start_robots(self, no_of_robots=2):
     names = random.sample(self.robot_names, 2)
@@ -263,4 +246,13 @@ class SoloGame(Game):
 
 
 if __name__ == '__main__':
-  pass
+  v = View()
+  
+  p = LocalHuman(
+    name='Test pilot',
+    ship=objects.RaceShip())
+  g = SoloGame(v, p)
+  
+  v.present(hide_title_bar=True)
+  
+  g.start()

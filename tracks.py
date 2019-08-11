@@ -1,9 +1,8 @@
 #coding: utf-8
 
 import random
-
-#from vector import Vector
-
+from ui import Point
+from vpoint import VPoint as V
 from objects import *
 
 class Track():
@@ -23,12 +22,12 @@ class Open_Range(Track):
     game.current_turn = {}
     for i, player in enumerate(game.players_in_order):
       ship = player.ship
-      ship_vector = Vector(Open_Range.ship_distance, 0)
+      ship_vector = V(Point(Open_Range.ship_distance, 0))
       ship_vector.degrees = 20+i*angle_gap
-      ship.position = tuple(ship_vector)
-      target_vector = Vector(0,0) - ship_vector
+      ship.center = ship_vector
+      target_vector = V(Point(0,0) - ship_vector)
       target_vector.magnitude = 100
-      ship.rotation = target_vector.radians
+      ship.rotation = target_vector.degrees
       ship.velocity = target_vector
       game.current_turn[player.id] = {
         'action': 'move',
