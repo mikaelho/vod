@@ -8,8 +8,10 @@ load_framework('SpriteKit')
 SKView = ObjCClass('SKView')
 SKScene = ObjCClass('SKScene')
 SKShapeNode = ObjCClass('SKShapeNode')
+SKSpriteNode = ObjCClass('SKSpriteNode')
 SKPhysicsBody = ObjCClass('SKPhysicsBody')
 SKLightNode = ObjCClass('SKLightNode')
+SKTexture = ObjCClass('SKTexture')
 #CGMutablePath = ObjCClass('CGMutablePath')
 
 def prop(func):
@@ -26,7 +28,7 @@ def node_relay(attribute_name):
   return p
   
 def no_op():
-  '''Property that does nothing'''
+  '''Property that does nothing, used by SceneNode to masquerade as a regular node. '''
   p = property(
     lambda self:
       None,
@@ -134,7 +136,10 @@ class PathNode(Node):
         self.node.path = cgpath
       physics = SKPhysicsBody.bodyWithPolygonFromPath_(cgpath)
       if physics is None:
-        raise RuntimeError(f'Could not create physics body for path {path}. Must be created in counterclockwise order.')
+        texture = view.skview.textureFromNode_(self.node)
+        physics = SKPhysicsBody.bodyWithTexture_size_(texture, texture.size())
+      if physics is None:
+        raise RuntimeError(f'Could not create physics body for path {path}.')
       self.node.setPhysicsBody_(physics)
     else:
       return self._path
@@ -188,6 +193,15 @@ class SceneNode(Node):
     
   contact_bitmask = no_op()
     
+    
+class SpriteNode(Node):
+  
+  def __init__(self, image, **kwargs):
+    texture = SKTexture.textureWithImage_(ObjCInstance(image))
+    self.node = SKSpriteNode.spriteNodeWithTexture_(texture)
+    self.node.physicsBody = SKPhysicsBody.bodyWithTexture_size_(texture, texture.size())
+    super().__init__(**kwargs)
+    
 
 def update_(_self, _cmd, current_time):
   scene = ObjCInstance(_self)
@@ -206,7 +220,8 @@ def touchesBegan_withEvent_(_self, _cmd, _touches, event):
     node = random.choice([
     #create_box_shape,
     #create_circle_shape,
-    create_polygon_shape
+    #create_polygon_shape,
+    create_sprite_node,
     ])(py_point)
     node.fill_color = 'blue'
     node.parent = py_scene
@@ -300,22 +315,29 @@ if __name__ == '__main__':
     return BoxNode((width, height), position=point)
     
   def create_polygon_shape(position):
-    segment_len = random.randint(15, 20)
+    r = random.randint(20, 40)
     p = ui.Path()
-    degrees = 0
-    sv = vector.Vector(segment_len, 0)
-    current = 
-    for _ in range(20):
-      
+    magnitude = random.randint(
+      int(.3*r), int(.7*r))
+    for a in range(0, 340, 20):
+      magnitude = max(
+        min(
+          magnitude + random.randint(
+            int(-.2*r), int(.2*r)), 
+          r),
+        .2*r)
       point = vector.Vector(magnitude, 0)
       point.degrees = a
-      #if a == 340:
-      #  p.move_to(*point)
-      #else:
-      p.line_to(*point)
+      if a == 0:
+        p.move_to(*point)
+      else:
+        p.line_to(*point)
     p.close()
     return PathNode(path=p, position=position)
 
+  def create_sprite_node(point):
+    return SpriteNode(image=ui.Image('spc:EnemyBlue2'), position=point)
+  
   
   view = SpriteView(background_color='green')
   view.present(hide_title_bar=False)
