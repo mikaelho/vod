@@ -65,7 +65,7 @@ def convert_relay(attribute_name):
   '''Property creator for pass-through physics properties'''
   p = property(
     lambda self:
-      cg_to_py(getattr(self.node, attribute_name)()),
+      cg_to_py(getattr(self.node, attribute_name)),
     lambda self, value:
       setattr(self.node, attribute_name, py_to_cg(value))
   )
@@ -308,6 +308,8 @@ class CircleNode(PathNode):
     node.physicsBody = SKPhysicsBody.bodyWithCircleOfRadius_(radius)
     '''
     super().__init__(path=ui.Path.oval(-r, -r, 2*r, 2*r), **kwargs)
+    #self.anchor_point = (0.5, 0.)
+    #print(self.anchor_point)
     
   @prop
   def radius(self, *args):
@@ -337,8 +339,11 @@ class SpriteTouch:
     prev = touch.previousLocationInNode_(node)
     self.prev_location = ui.Point(prev.x, prev.y)
     self.timestamp = touch.timestamp()
+    
+  def convert_to_view(self, scene):
+    self.location = scene.convert_to_view(self.location)
+    self.prev_location = scene.convert_to_view(self.prev_location)
 
-@on_main_thread
 def handle_touch(_self, _cmd, _touches, event, py_func_name):
   node = ObjCInstance(_self)
 
@@ -347,8 +352,8 @@ def handle_touch(_self, _cmd, _touches, event, py_func_name):
   if py_func is None: return
 
   touches = ObjCInstance(_touches)
-  for id, touch in enumerate(touches):
-    py_touch = SpriteTouch(id, touch, node)
+  for touch in touches:
+    py_touch = SpriteTouch(int(touch._touchIdentifier()), touch, node)
     py_func(py_touch)
 
 def touchesBegan_withEvent_(_self, _cmd, _touches, event):
@@ -415,7 +420,7 @@ touchesEnded_withEvent_,
 
 class SceneNode(Node):
   
-  def __init__(self, touchable=True, physics_debug=False, **kwargs):
+  def __init__(self, touchable=False, physics_debug=False, **kwargs):
     kwargs['physics_debug'] = physics_debug
     self.view = view = TouchableSpriteView(**kwargs) if touchable else SpriteView(**kwargs)
     rect = CGRect(CGPoint(0, 0), CGSize(view.width, view.height))
@@ -490,7 +495,87 @@ class SceneNode(Node):
   contact_bitmask = no_op()
   background_color = color_relay('backgroundColor')
   
-
+class TouchScene(SceneNode):
+  
+  def __init__(self, **kwargs):
+    self.viewable_area = None
+    super().__init__(**kwargs)
+    self.camera = CameraNode(parent=self)
+    self.converter = TouchView(
+      frame=self.view.bounds, flex='WH', touch_enabled=False, scene=self)
+    self.view.add_subview(self.converter)
+    
+  def touch_began(self, touch):
+    touch.convert_to_view(self)
+    self.converter.touch_began(touch)
+    
+  def touch_moved(self, touch):
+    touch.convert_to_view(self)
+    self.converter.touch_moved(touch)
+    
+  def touch_ended(self, touch):
+    touch.convert_to_view(self)
+    self.converter.touch_ended(touch)
+    
+  @prop
+  def viewable_area(self, *args):
+    if args:
+      value = args[0]
+      if type(value) is not Rect:
+        if value is not None and len(value) == 4:
+          value = Rect(*value)
+      self._viewable_area = value
+    else:
+      return self._viewable_area
+  
+  def keep_in_viewable_area(self, orig_scale=1):
+    if self.viewable_area is None:
+      return
+    v = self.viewable_area
+    b = self.bounds
+    if b.x < v.x:
+      self.camera.position += (v.x - b.x, 0)
+    if b.y < v.y:
+      self.camera.position += (0, v.y - b.y)
+    if b.max_x > v.max_x:
+      self.camera.position -= (b.max_x - v.max_x, 0)
+    if b.max_y > v.max_y:
+      self.camera.position -= (0, b.max_y - v.max_y)
+    if b.width > v.width or b.height > v.height:
+      self.camera.scale = orig_scale
+    
+  '''
+  def on_pan(self, g):
+    if g.began:
+      self.start_camera_position = self.camera.position
+      self.start_location = self.convert_to_view(g.location)
+      self.start_pos = g.location
+    if g.changed:
+      new_pos = self.start_pos + g.translation
+      relative_start = self.convert_from_view(self.start_location)
+      delta = new_pos - relative_start
+      self.camera.position = self.start_camera_position - delta
+      
+  def on_pinch(self, g):
+    if g.began:
+      self.start_scale = self.camera.scale
+      self.start_distance = self.pinch_distance_in_view(g)
+    if g.changed:
+      scale = self.pinch_distance_in_view(g)/self.start_distance
+      print(len(g.touches_in_order))
+      focus_start_pos = self.convert_to_view(g.location)
+      self.camera.scale = self.start_scale / scale
+      focus_new_pos = self.convert_from_view(focus_start_pos)
+      self.camera.position -= g.location - focus_new_pos
+      
+  def pinch_distance_in_view(self, g):
+    distance_vector = (
+      self.convert_to_view(g.touches_in_order[0].location) -  
+      self.convert_to_view(g.touches_in_order[1].location))
+    print(abs(distance_vector))
+    return abs(distance_vector)
+'''
+  
 class SpriteView(ui.View):
 
   def __init__(self, physics_debug, **kwargs):
@@ -503,6 +588,8 @@ class SpriteView(ui.View):
       skview.showsPhysics = True
     ObjCInstance(self).addSubview(skview)
     self.skview = skview
+    self.multitouch_enabled = True
+    self.skview.setMultipleTouchEnabled_(True)
   
   def will_close(self):
     self.scene.node.removeAllChildren()
@@ -514,15 +601,14 @@ class SpriteView(ui.View):
     self.scene.node = None
 
 
-class TouchableSpriteView(
-  SpriteView, pygestures.GestureMixin):
+class TouchView(
+  ui.View, pygestures.GestureMixin):
     
   def __init__(self, **kwargs):
-    super().__init__(**kwargs)
-    self.multitouch_enabled = True
-    self.skview.setMultipleTouchEnabled_(True)
-    
+    super().__init__(**kwargs)  
+      
   def on_tap(self, g):
+    g.location = self.scene.convert_from_view(g.location)
     self.scene.on_tap(g)
     
   def on_pan(self, g):
@@ -534,21 +620,27 @@ class TouchableSpriteView(
       new_pos = self.start_pos + g.translation
       new_scene_location = self.scene.convert_from_view(new_pos)
       delta = new_scene_location - self.start_scene_location
+      prev_camera_pos = self.scene.camera.position
       self.scene.camera.position -= delta
+      self.scene.keep_in_viewable_area()
 
   def on_pinch(self, g):
     if g.began:
       self.start_scale = self.scene.camera.scale
     if g.changed:
       focus_start_pos = self.scene.convert_from_view(g.location)
+      orig_scale = self.scene.camera.scale
       self.scene.camera.scale = self.start_scale / g.scale
       focus_new_pos = self.scene.convert_from_view(g.location)
       self.scene.camera.position -= focus_start_pos - focus_new_pos
+      self.scene.keep_in_viewable_area(orig_scale)
       
+  '''
   def on_rotate(self, g):
     if g.changed:
       delta_rotation = g.prev_rotation - g.rotation
       self.scene.camera.rotation -= math.radians(delta_rotation)
+  '''
 
 
 if __name__ == '__main__':
@@ -567,21 +659,23 @@ if __name__ == '__main__':
     def touch_ended(self, touch):
       self.fill_color = random_color()
   
-  class TestScene(SceneNode):
+  class TestScene(TouchScene):
     
     def __init__(self, **kwargs):
       w,h = ui.get_screen_size()
-      va = (-2*w, -h, 4*w, 2*h)
-      super().__init__(touchable=True, viewable_area=va, **kwargs)
-      b = BoxNode((va[2], va[3]), parent=self, fill_color='blue')
-      c1 = CircleNode(20, parent=self, fill_color='red', position 
-      =(va[0], va[1]))
-      
-      c2 = CircleNode(20, parent=self.camera, dynamic='False', fill_color='green')
-      c2.node.physicsBody = None
+      va = Rect(-2*w, -h, 4*w, 2*h)
+      super().__init__(viewable_area=va, **kwargs)
+      b = BoxNode((va[2], va[3]), parent=self, fill_color='blue', dynamic=False)
+      b.node.physicsBody = None
+      c1 = CircleNode(20, parent=self, fill_color='red', position=(va.x, va.y))
+      c2 = CircleNode(20, parent=self, fill_color='red', position=(va.x+va.width, va.y))
+      c3 = CircleNode(20, parent=self, fill_color='red', position=(va.x+va.width, va.y+va.height))
+      c4 = CircleNode(20, parent=self, fill_color='red', position=(va.x, va.y+va.height))
+      #c2 = CircleNode(20, parent=self.camera, dynamic='False', fill_color='green')
+      #c2.node.physicsBody = None
 
       #self.set_edge_loop(-w/2,-h/2,w,h)
-      self.camera.scale = 5
+      #self.camera.scale = 5
     
     def update(self, timestamp):
       for child in scene.children():
