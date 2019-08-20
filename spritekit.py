@@ -1,19 +1,27 @@
-import random
+import random, importlib, math
+
 import ui
 from objc_util import *
 from objc_util import ObjCInstanceMethodProxy
-from scene import Rect
+from scene import Rect, Size
+
+#from gestures import Gestures
+try:
+  import pygestures
+except ModuleNotFoundError: pass
+
 
 load_framework('SpriteKit')
 
 SKView = ObjCClass('SKView')
 SKScene = ObjCClass('SKScene')
+SKNode = ObjCClass('SKNode')
 SKShapeNode = ObjCClass('SKShapeNode')
 SKSpriteNode = ObjCClass('SKSpriteNode')
+SKCameraNode = ObjCClass('SKCameraNode')
 SKPhysicsBody = ObjCClass('SKPhysicsBody')
 SKLightNode = ObjCClass('SKLightNode')
 SKTexture = ObjCClass('SKTexture')
-#CGMutablePath = ObjCClass('CGMutablePath')
 
 def py_to_cg(value):
   if len(value) == 4:
@@ -21,7 +29,10 @@ def py_to_cg(value):
     return CGRect(CGPoint(x, y), CGSize(w,h))
   elif len(value) == 2:
     x, y = value
-    return CGPoint(x, y)   
+    return CGPoint(x, y)
+  elif type(value) == Size:
+    w, h = value
+    return CGSize(w, h)
     
 def cg_to_py(value):
   if type(value) == ObjCInstanceMethodProxy:
@@ -34,6 +45,8 @@ def cg_to_py(value):
     return Rect(
       value.origin.x, value.origin.y,
       value.size.width, value.size.height)
+  elif type(value) == CGSize:
+    return Size(value.width, value.height)
 
 def prop(func):
   return property(func, func)
@@ -45,6 +58,16 @@ def node_relay(attribute_name):
       getattr(self.node, attribute_name)(),
     lambda self, value:
       setattr(self.node, attribute_name, value)
+  )
+  return p
+  
+def convert_relay(attribute_name):
+  '''Property creator for pass-through physics properties'''
+  p = property(
+    lambda self:
+      cg_to_py(getattr(self.node, attribute_name)()),
+    lambda self, value:
+      setattr(self.node, attribute_name, py_to_cg(value))
   )
   return p
   
@@ -90,15 +113,6 @@ def color_relay(attribute_name):
   )
   return p
   
-def rect_relay(attribute_name):
-  p = property(
-    lambda self:
-      cg_to_py(getattr(self.node, attribute_name)),
-    lambda self, value:
-      setattr(self.node, attribute_name, py_to_cg(value))
-  )
-  return p
-  
 def physics_relay(attribute_name):
   '''Property creator for pass-through physics properties'''
   p = property(
@@ -122,12 +136,13 @@ def vector_physics_relay(attribute_name):
 
 class Node:
   
-  def __init__(self, contact_bitmask=1, **kwargs):
+  def __init__(self, **kwargs):
     self._parent = None
     self._children = []
     self.scene = None
+    if not hasattr(self, 'node'):
+      self.node = SKNode.alloc().init()
     self.node.py_node = self
-    self.contact_bitmask = contact_bitmask
     for key in kwargs:
       setattr(self, key, kwargs[key])
   
@@ -154,7 +169,8 @@ class Node:
       raise NotImplementedError('children property cannot be set directly')
     else:
       return self._children
-    
+  
+  '''  
   @prop
   def position(self, *args):
     if args:
@@ -162,6 +178,7 @@ class Node:
       self.node.position = CGPoint(a[0], a[1])
     else:
       return ui.Point(self.node.position.x, self.node.position.y)
+  '''
       
   def convert_point_to(self, point, node):
     return cg_to_py(
@@ -198,20 +215,23 @@ class Node:
       cgpath)
       
   alpha = node_relay('alpha')
+  anchor_point = convert_relay('anchorPoint')
   angular_damping = physics_relay('angularDamping')
   background_color = fill_color = color_relay('fillColor')
   contact_bitmask = physics_relay('contactTestBitMask')
-  frame = rect_relay('frame')
+  frame = convert_relay('frame')
   hidden = node_relay('isHidden')
   linear_damping = physics_relay('linearDamping')
   name = str_relay('name')
+  position = convert_relay('position')
+  position_z = node_relay('zPosition')
   restitution = physics_relay('restitution')
   rotation = node_relay('zRotation')
   scale_x = node_relay('xScale')
   scale_y = node_relay('yScale')
+  size = convert_relay('size')
   touch_enabled = node_relay('userInteractionEnabled')
   velocity = vector_physics_relay('velocity')
-  position_z = node_relay('zPosition')
 
 
 class PathNode(Node):
@@ -263,6 +283,21 @@ class BoxNode(PathNode):
       return self._size
 
 
+class CameraNode(Node):
+  
+  def __init__(self, **kwargs):
+    self.node = SKCameraNode.alloc().init()
+    super().__init__(**kwargs)
+    
+  def visible(self, node):
+    return self.node.containsNode_(node.node)
+    
+  def visible_nodes():
+    visible = set()
+    for sk_node in self.node.containedNodeSet_():
+      visible.add(sk_node.py_node)
+    return visible
+
 class CircleNode(PathNode):
   
   def __init__(self, radius=50, **kwargs):
@@ -303,6 +338,7 @@ class SpriteTouch:
     self.prev_location = ui.Point(prev.x, prev.y)
     self.timestamp = touch.timestamp()
 
+@on_main_thread
 def handle_touch(_self, _cmd, _touches, event, py_func_name):
   node = ObjCInstance(_self)
 
@@ -344,16 +380,17 @@ def didBeginContact_(_self,_cmd,contact):
   #print("Contacting")
   pass
 
+
 SpriteScene = create_objc_class(
 'SpriteScene',
 SKScene,
 methods=[
-update_,
+#update_,
 didChangeSize_,
 touchesBegan_withEvent_,
 touchesMoved_withEvent_,
 touchesEnded_withEvent_,
-didBeginContact_
+didBeginContact_,
 ],
 protocols=['SKPhysicsContactDelegate'])
 
@@ -378,8 +415,9 @@ touchesEnded_withEvent_,
 
 class SceneNode(Node):
   
-  def __init__(self, **kwargs):
-    self.view = view = SpriteView(**kwargs)
+  def __init__(self, touchable=True, physics_debug=False, **kwargs):
+    kwargs['physics_debug'] = physics_debug
+    self.view = view = TouchableSpriteView(**kwargs) if touchable else SpriteView(**kwargs)
     rect = CGRect(CGPoint(0, 0), CGSize(view.width, view.height))
     self.scene = self
     self.node = scene = SpriteScene.sceneWithSize_(rect.size)
@@ -389,7 +427,41 @@ class SceneNode(Node):
     scene.physicsWorld().setContactDelegate_(scene)
     
     super().__init__(**kwargs)
+    
+    if touchable:
+      self.camera = CameraNode(parent=self)
     view.skview.presentScene_(scene)
+    
+  def convert_to_view(self, point):
+    return cg_to_py(self.node.convertPointToView_(
+      py_to_cg(point)
+    ))
+    
+  def convert_from_view(self, point):
+    return cg_to_py(self.node.convertPointFromView_(
+      py_to_cg(point)
+    ))
+    
+  @prop
+  def bounds(self, *args):
+    if args:
+      value = args[0]
+      raise NotImplementedError('Setting bounds on a scene not supported')
+    else:
+      x,y,w,h = self.view.frame
+      c = self.convert_from_view
+      corner = c((x, y+h))
+      other = c((x+w, y))
+      return Rect(*corner,
+      other.x-corner.x, other.y-corner.y)
+    
+  @prop
+  def camera(self, *args):
+    if args:
+      value = args[0]
+      self.node.setCamera_(value.node)
+    else:
+      return self.node.camera().py_node
     
   @prop
   def edges(self, *args):
@@ -404,7 +476,8 @@ class SceneNode(Node):
             self.view.width,
             self.view.height)))
     else:
-      return self.node.physicsBody() is not None
+      return False
+      #self.node.physicsBody() is not None
     
   @prop
   def gravity(self, *args):
@@ -420,13 +493,14 @@ class SceneNode(Node):
 
 class SpriteView(ui.View):
 
-  def __init__(self, **kwargs):
+  def __init__(self, physics_debug, **kwargs):
     super().__init__(**kwargs)
     rect = CGRect(CGPoint(0, 0),CGSize(self.width, self.height))
     skview = SKView.alloc().initWithFrame_(rect)
     skview.autoresizingMask = 2 + 16 # WH
     #skview.showsNodeCount = True
-    #skview.showsPhysics = True
+    if physics_debug:
+      skview.showsPhysics = True
     ObjCInstance(self).addSubview(skview)
     self.skview = skview
   
@@ -434,6 +508,44 @@ class SpriteView(ui.View):
     self.scene.node.removeAllChildren()
     # Must pause to stop update_
     self.scene.node.paused = True
+    self.scene.node.removeFromParent()
+    self.skview.removeFromSuperview()
+    self.skview = None
+    self.scene.node = None
+
+
+class TouchableSpriteView(
+  SpriteView, pygestures.GestureMixin):
+    
+  def __init__(self, **kwargs):
+    super().__init__(**kwargs)
+    self.multitouch_enabled = True
+    self.skview.setMultipleTouchEnabled_(True)
+    
+  def on_pan(self, g):
+    if g.began:
+      self.start_camera_position = self.scene.camera.position
+      self.start_scene_location = self.scene.convert_from_view(g.location)
+      self.start_pos = g.location
+    if g.changed:
+      new_pos = self.start_pos + g.translation
+      new_scene_location = self.scene.convert_from_view(new_pos)
+      delta = new_scene_location - self.start_scene_location
+      self.scene.camera.position -= delta
+
+  def on_pinch(self, g):
+    if g.began:
+      self.start_scale = self.scene.camera.scale
+    if g.changed:
+      focus_start_pos = self.scene.convert_from_view(g.location)
+      self.scene.camera.scale = self.start_scale / g.scale
+      focus_new_pos = self.scene.convert_from_view(g.location)
+      self.scene.camera.position -= focus_start_pos - focus_new_pos
+      
+  def on_rotate(self, g):
+    if g.changed:
+      delta_rotation = g.prev_rotation - g.rotation
+      self.scene.camera.rotation -= math.radians(delta_rotation)
 
 
 if __name__ == '__main__':
@@ -454,12 +566,18 @@ if __name__ == '__main__':
   
   class TestScene(SceneNode):
     
-    def sprite_update(self, timestamp):
+    def __init__(self, **kwargs):
+      super().__init__(touchable=True, **kwargs)
+      w,h = ui.get_screen_size()
+      self.set_edge_loop(-w/2,-h/2,w,h)
+      self.camera.scale = 2
+    
+    def update(self, timestamp):
       for child in scene.children():
         if child.position().y < 0:
           child.removeFromParent()
           
-    def touch_ended(self, touch):
+    def on_tap(self, touch):
       node = random.choice([
         self.create_box_shape,
         self.create_circle_shape,
@@ -468,8 +586,7 @@ if __name__ == '__main__':
       ])(touch.location)
       node.parent = self
       node.fill_color = random_color()
-      node.velocity = (random.randint(-200,200), random.randint(-200,200))
-      print(node.convert_point_to((0,0), self))
+      #node.velocity = (random.randint(-200,200), random.randint(-200,200))
     
     def create_circle_shape(self, point):
       radius = random.randint(25, 45)
@@ -504,10 +621,10 @@ if __name__ == '__main__':
   
     def create_sprite_node(self, point):
       return SpriteNode(image=ui.Image('spc:EnemyBlue2'), position=point)
-  
+
   
   scene = TestScene(
     background_color='green',
     gravity=(0,0),
-    edges=True)
+    physics_debug=True)
   scene.view.present(hide_title_bar=True)
