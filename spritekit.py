@@ -522,6 +522,9 @@ class TouchableSpriteView(
     self.multitouch_enabled = True
     self.skview.setMultipleTouchEnabled_(True)
     
+  def on_tap(self, g):
+    self.scene.on_tap(g)
+    
   def on_pan(self, g):
     if g.began:
       self.start_camera_position = self.scene.camera.position
@@ -567,10 +570,18 @@ if __name__ == '__main__':
   class TestScene(SceneNode):
     
     def __init__(self, **kwargs):
-      super().__init__(touchable=True, **kwargs)
       w,h = ui.get_screen_size()
-      self.set_edge_loop(-w/2,-h/2,w,h)
-      self.camera.scale = 2
+      va = (-2*w, -h, 4*w, 2*h)
+      super().__init__(touchable=True, viewable_area=va, **kwargs)
+      b = BoxNode((va[2], va[3]), parent=self, fill_color='blue')
+      c1 = CircleNode(20, parent=self, fill_color='red', position 
+      =(va[0], va[1]))
+      
+      c2 = CircleNode(20, parent=self.camera, dynamic='False', fill_color='green')
+      c2.node.physicsBody = None
+
+      #self.set_edge_loop(-w/2,-h/2,w,h)
+      self.camera.scale = 5
     
     def update(self, timestamp):
       for child in scene.children():

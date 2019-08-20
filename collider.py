@@ -1,5 +1,6 @@
 #coding: utf-8
 from ui import *
+import objc_util
 from vpoint import VPoint as V
 from scripter import *
 from random import *
@@ -32,6 +33,20 @@ def prepare_for_collisions(
   density=1,
   match_center=True,
   debug=False):
+  ''' Adds information to the view to help with later collision detection. View is expected to contain the image of an object, by default represented by all non-transparent pixels of the view.
+  
+  Also shifts the view's anchor point to be the same as its center of mass. Setting the view's `center` will then set the location of its center of mass, and rotation transforms are around this point. View's frame and setting its location by the `x` and `y` attributes remains unaffected.
+  
+  Added elements are listed below.
+    * `mask_array` - (numpy) coordinates of all pixels of the object
+    * `mass` - sum of pixels in the object, multiplied by the given density (by default 1)
+    * `center_of_mass` - coordinates for the center of mass; center of rotation transforms
+    * `hit_box` - hidden subview that is a tight fit around the object
+    * `normals_array` - (numpy) approximate surface normals of all the pixels forming the outside of the object
+    * `angular_inertia` - sum of all pixels of the object, multiplied by their distance from the center of mass
+  '''
+    
+    
   img = image or _snapshot(view)
   if debug:
     img.show()
@@ -127,6 +142,13 @@ def prepare_for_collisions(
     np.average(ii[1]), 
     np.average(ii[0])))
     
+  # Set view's anchor point
+  view.objc_instance.layer().setAnchorPoint(
+    objc_util.CGPoint(
+      center_of_mass.x/view.width,
+      center_of_mass.y/view.height
+  ))
+    
   # Angular inertia
   # (mass multiplied by the distance from
   # rotation axis, squared)
@@ -139,18 +161,32 @@ def prepare_for_collisions(
   
   mask_array = np.array(tuple(zip(ii[1],ii[0]))).astype(int)
   
-  angular_inertia = np.sum([abs(Point(x,y)-center_of_mass)**2 * density for (x,y) in mask_array])
-  
   if debug:
     plt.clf()
-    plt.title('As coordinates')
+    plt.title('As coordinates, with center of mass')
     b = view.bounds
     plt.axis((b.x, b.x+b.w, b.y, b.y+b.h))
     plt.subplot().set_aspect('equal')
     plt.gca().invert_yaxis()
     ma = mask_array
     plt.scatter(ma[:,0],ma[:,1], cmap='Greys')
+    plt.scatter([center_of_mass.x], [center_of_mass.y], cmap='Pastel1')
     plt.show()
+    
+  # Hit box
+  x1 = np.amin(mask_array[:0])
+  x2 = np.amax(mask_array[:0])
+  y1 = np.amin(mask_array[:1])
+  y2 = np.amax(mask_array[:1])
+
+  hit_box = ui.View(hidden=True, frame=(
+    x1, y1, x2-x1+1, y2-y1+1))
+  view.add_subview(hit_box)
+
+  if debug:
+    print(view.frame, hit_box.frame)
+    
+  angular_inertia = np.sum([abs(Point(x,y)-center_of_mass)**2 * density for (x,y) in mask_array])
     
   # Calculate normals for surface points
   # Degrees; np.nan for non-surface points
@@ -197,7 +233,6 @@ def check_and_handle_collisions(views, first):
     view.marker.hidden = True
     view.visualize = None
     hit_the_edge(view)
-    #find_scripter_instance(view).cancel(rock.mover)
     
   # For every unique combination of views
   for a,b in combinations(views, 2):
@@ -206,15 +241,24 @@ def check_and_handle_collisions(views, first):
     if a.frame.intersects(b.frame):
       
       # Box covering frames of both bounding
-      # boxes
+      # boxes, even when rotated
       bb = a.frame.union(b.frame).inset(-10,-10)
       j = joint_size = Size(*(max(bb.size)+1,)*2)
-      j.x, j.y = j.y, j.x
+      #j.x, j.y = j.y, j.x
       
       # Rotate masks to match current view
       # rotation and place
       a_offset = a.center - bb.origin
       b_offset = b.center - bb.origin
+      a_placed = (np.dot(
+        a.mask_array-a.center_of_mass, 
+        rotation_matrix(a.rotation)
+        )+a_offset).astype(int)
+      b_placed = (np.dot(
+        b.mask_array-b.center_of_mass, 
+        rotation_matrix(b.rotation)
+        )+b_offset).astype(int)
+      '''
       a_placed = (np.dot(
         a.mask_array-a.bounds.center(), 
         rotation_matrix(a.rotation)
@@ -223,6 +267,7 @@ def check_and_handle_collisions(views, first):
         b.mask_array-b.bounds.center(), 
         rotation_matrix(b.rotation)
         )+b_offset).astype(int)
+      '''
         
       # Use rotated masks to write values
       # into shared matrix
