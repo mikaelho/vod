@@ -5,11 +5,10 @@ from objc_util import *
 from objc_util import ObjCInstanceMethodProxy
 from scene import Rect, Size
 
-#from gestures import Gestures
 try:
   import pygestures
+  from scripter import *
 except ModuleNotFoundError: pass
-
 
 load_framework('SpriteKit')
 
@@ -71,6 +70,14 @@ def convert_relay(attribute_name):
   )
   return p
   
+def convert_relay_readonly(attribute_name):
+  '''Property creator for pass-through physics properties'''
+  p = property(
+    lambda self:
+      cg_to_py(getattr(self.node, attribute_name))
+  )
+  return p
+  
 def str_relay(attribute_name):
   '''Property creator for pass-through physics properties'''
   p = property(
@@ -123,6 +130,14 @@ def physics_relay(attribute_name):
   )
   return p
   
+def physics_relay_readonly(attribute_name):
+  '''Property creator for pass-through physics properties'''
+  p = property(
+    lambda self:
+      getattr(self.node.physicsBody(), attribute_name)
+  )
+  return p
+  
 def vector_physics_relay(attribute_name):
   p = property(
     lambda self:
@@ -139,10 +154,15 @@ class Node:
   def __init__(self, **kwargs):
     self._parent = None
     self._children = []
-    self.scene = None
+
     if not hasattr(self, 'node'):
       self.node = SKNode.alloc().init()
     self.node.py_node = self
+    
+    self.paused = False
+    self.speed = 1.0
+    self.scene = None
+    
     for key in kwargs:
       setattr(self, key, kwargs[key])
   
@@ -213,18 +233,30 @@ class Node:
     cgpath = path.objc_instance.CGPath()
     self.node.physicsBody = SKPhysicsBody.bodyWithEdgeLoopFromPath_(
       cgpath)
-      
+  
+  affected_by_gravity = physics_relay('affectedByGravity')   
+  allows_rotation = physics_relay('allowsRotation')
   alpha = node_relay('alpha')
   anchor_point = convert_relay('anchorPoint')
+  area = physics_relay_readonly('area')
   angular_damping = physics_relay('angularDamping')
+  angular_velocity = physics_relay('angularVelocity')
   background_color = fill_color = color_relay('fillColor')
+  bbox = convert_relay_readonly('calculateAccumulatedFrame') 
+  bullet_physics = physics_relay('usesPreciseCollisionDetection')
   contact_bitmask = physics_relay('contactTestBitMask')
+  
+  density = physics_relay_readonly('density')
+  dynamic = physics_relay('isDynamic')
   frame = convert_relay('frame')
+  friction = physics_relay('friction')
   hidden = node_relay('isHidden')
   linear_damping = physics_relay('linearDamping')
+  mass = physics_relay('mass')
   name = str_relay('name')
+  physics = node_relay('physicsBody')
   position = convert_relay('position')
-  position_z = node_relay('zPosition')
+  resting = physics_relay_readonly('isResting')
   restitution = physics_relay('restitution')
   rotation = node_relay('zRotation')
   scale_x = node_relay('xScale')
@@ -232,6 +264,7 @@ class Node:
   size = convert_relay('size')
   touch_enabled = node_relay('userInteractionEnabled')
   velocity = vector_physics_relay('velocity')
+  z_position = node_relay('zPosition')
 
 
 class PathNode(Node):
@@ -261,6 +294,28 @@ class PathNode(Node):
       self.node.setPhysicsBody_(physics)
     else:
       return self._path
+
+
+class PointsNode(Node):
+  
+  def __init__(self, points, smooth=False, **kwargs):
+    cg_points = [ py_to_cg(point) for point in points ]
+
+    cg_points_array = (CGPoint * len(cg_points))(*cg_points)
+    
+    if smooth:
+      self.node = SKShapeNode.shapeNodeWithSplinePoints_count_(cg_points_array, len(cg_points), restype=c_void_p, argtypes=[POINTER(CGPoint), c_ulong])
+
+    else:
+      self.node = SKShapeNode.shapeNodeWithPoints_count_(cg_points_array, len(cg_points), restype=c_void_p, argtypes=[POINTER(CGPoint), c_ulong])
+
+    texture = SKView.alloc().init().textureFromNode_(self.node)
+    self.node = TouchSpriteNode.spriteNodeWithTexture_(texture)
+    physics = SKPhysicsBody.bodyWithTexture_size_(texture, texture.size())
+    self.node.setPhysicsBody_(physics)
+    
+    super().__init__(**kwargs)
+    
 
 class BoxNode(PathNode):
   
@@ -433,9 +488,15 @@ class SceneNode(Node):
     
     super().__init__(**kwargs)
     
-    if touchable:
-      self.camera = CameraNode(parent=self)
+    #if touchable:
+    #  self.camera = CameraNode(parent=self)
     view.skview.presentScene_(scene)
+    
+  def run(self):
+    self.view.present()
+    
+  def setup(self):
+    pass
     
   def convert_to_view(self, point):
     return cg_to_py(self.node.convertPointToView_(
@@ -576,7 +637,7 @@ class TouchScene(SceneNode):
     return abs(distance_vector)
 '''
   
-class SpriteView(ui.View):
+class SpriteView(Scripter):
 
   def __init__(self, physics_debug, **kwargs):
     super().__init__(**kwargs)
@@ -603,9 +664,6 @@ class SpriteView(ui.View):
 
 class TouchView(
   ui.View, pygestures.GestureMixin):
-    
-  def __init__(self, **kwargs):
-    super().__init__(**kwargs)  
       
   def on_tap(self, g):
     g.location = self.scene.convert_from_view(g.location)
@@ -642,6 +700,13 @@ class TouchView(
       self.scene.camera.rotation -= math.radians(delta_rotation)
   '''
 
+def run(scene, 
+  orientation=None, 
+  frame_interval=1,
+  anti_alias=False,
+  show_fps=False,
+  multi_touch=True):
+  scene.view.present()
 
 if __name__ == '__main__':
   
@@ -688,10 +753,11 @@ if __name__ == '__main__':
         self.create_circle_shape,
         self.create_polygon_shape,
         self.create_sprite_node,
+        self.create_smooth_shape,
       ])(touch.location)
       node.parent = self
       node.fill_color = random_color()
-      #node.velocity = (random.randint(-200,200), random.randint(-200,200))
+      node.velocity = (random.randint(-20,20), random.randint(-20,20))
     
     def create_circle_shape(self, point):
       radius = random.randint(25, 45)
@@ -703,11 +769,12 @@ if __name__ == '__main__':
       node = BoxNode((width, height), position=point)
       return node
       
-    def create_polygon_shape(self, position):
+    def get_points(self):
       r = random.randint(40, 80)
-      p = ui.Path()
       magnitude = random.randint(
         int(.3*r), int(.7*r))
+        
+      points = []
       for a in range(0, 340, 20):
         magnitude = max(
           min(
@@ -717,7 +784,19 @@ if __name__ == '__main__':
           .2*r)
         point = vector.Vector(magnitude, 0)
         point.degrees = a
-        if a == 0:
+        points.append(tuple(point))
+      points.append(points[0])
+      return points
+      
+    def create_smooth_shape(self, position):
+      points = self.get_points()
+      return PointsNode(points, smooth=True, position=position)
+      
+    def create_polygon_shape(self, position):
+      points = self.get_points()
+      p = ui.Path()
+      for i, point in enumerate(points):
+        if i == 0:
           p.move_to(*point)
         else:
           p.line_to(*point)
@@ -727,9 +806,50 @@ if __name__ == '__main__':
     def create_sprite_node(self, point):
       return SpriteNode(image=ui.Image('spc:EnemyBlue2'), position=point)
 
-  
+  '''
   scene = TestScene(
     background_color='green',
     gravity=(0,0),
     physics_debug=True)
   scene.view.present(hide_title_bar=True)
+  '''
+  
+  scene = SceneNode(
+    background_color='black',
+    gravity=(0,0))
+    
+  class SpaceSprite(SpriteNode):
+    
+    def __init__(self, **kwargs):
+      super().__init__(**kwargs)
+      self.angular_damping = 0
+    
+  ship = SpaceSprite(
+    image=ui.Image('spc:EnemyBlue2'), 
+    position=(-50,300),
+    rotation=math.pi/2,
+    velocity=(100,0),
+    #alpha=0.0,
+    parent=scene)
+    
+  rock = SpaceSprite(
+    image=ui.Image('spc:MeteorGrayBig3'), 
+    position=(425,320),
+    velocity=(-100,0),
+    angular_velocity=2,
+    #alpha=0.0,
+    parent=scene)
+    
+  scene.view.present()
+  
+  '''
+  @script
+  def animate(node):
+    show(ship1)
+    show(ship2)
+    yield 1.0
+    ship1.velocity = (100,0)
+    ship2.velocity = (-100,0)
+  '''
+    
+  #animate(scene)
