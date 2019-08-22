@@ -89,7 +89,7 @@ def str_relay(attribute_name):
   return p
   
 def no_op():
-  '''Property that does nothing, used by SceneNode to masquerade as a regular node. '''
+  '''Property that does nothing, used by Scene to masquerade as a regular node. '''
   p = property(
     lambda self:
       None,
@@ -151,6 +151,8 @@ def vector_physics_relay(attribute_name):
 
 class Node:
   
+  default_physics = None
+  
   def __init__(self, **kwargs):
     self._parent = None
     self._children = []
@@ -162,6 +164,12 @@ class Node:
     self.paused = False
     self.speed = 1.0
     self.scene = None
+    
+    if (self.default_physics is not None and
+      not type(self) == Scene):
+      for key in dir(self.default_physics()):
+        if not key.startswith('_'):
+          setattr(self, key, getattr(self.default_physics, key))
     
     for key in kwargs:
       setattr(self, key, kwargs[key])
@@ -254,7 +262,7 @@ class Node:
   linear_damping = physics_relay('linearDamping')
   mass = physics_relay('mass')
   name = str_relay('name')
-  physics = node_relay('physicsBody')
+  physics_node = node_relay('physicsBody')
   position = convert_relay('position')
   resting = physics_relay_readonly('isResting')
   restitution = physics_relay('restitution')
@@ -473,9 +481,9 @@ touchesEnded_withEvent_,
 ])
 
 
-class SceneNode(Node):
+class Scene(Node):
   
-  def __init__(self, touchable=False, physics_debug=False, **kwargs):
+  def __init__(self, physics=None, touchable=False, physics_debug=False, **kwargs):
     kwargs['physics_debug'] = physics_debug
     self.view = view = TouchableSpriteView(**kwargs) if touchable else SpriteView(**kwargs)
     rect = CGRect(CGPoint(0, 0), CGSize(view.width, view.height))
@@ -485,6 +493,11 @@ class SceneNode(Node):
     view.scene = self
     scene.scaleMode = 3 #resizeFill
     scene.physicsWorld().setContactDelegate_(scene)
+    
+    if physics is not None:
+      Node.default_physics = physics
+      if hasattr(physics, 'gravity'):
+        self.gravity = physics.gravity
     
     super().__init__(**kwargs)
     
@@ -556,7 +569,7 @@ class SceneNode(Node):
   contact_bitmask = no_op()
   background_color = color_relay('backgroundColor')
   
-class TouchScene(SceneNode):
+class TouchScene(Scene):
   
   def __init__(self, **kwargs):
     self.viewable_area = None
@@ -700,6 +713,33 @@ class TouchView(
       self.scene.camera.rotation -= math.radians(delta_rotation)
   '''
 
+class BasePhysics:
+  affected_by_gravity = True
+  allows_rotation = True
+  bullet_physics = False
+  dynamic = True
+
+class EarthPhysics(BasePhysics):
+  gravity = (0, -9.8)
+  angular_damping = 0.2
+  friction = 0.2
+  linear_damping = 0.1
+  restitution = 0.2
+  
+class SpacePhysics(BasePhysics):
+  gravity = (0, 0)
+  angular_damping = 0.0
+  friction = 0.2
+  linear_damping = 0.0
+  restitution = 1.0
+  
+class BilliardsPhysics(BasePhysics):
+  gravity = (0, 0)
+  angular_damping = 0.02
+  friction = 0.2
+  linear_damping = 0.02
+  restitution = 0.8
+
 def run(scene, 
   orientation=None, 
   frame_interval=1,
@@ -814,30 +854,33 @@ if __name__ == '__main__':
   scene.view.present(hide_title_bar=True)
   '''
   
-  scene = SceneNode(
-    background_color='black',
-    gravity=(0,0))
+  scene = Scene(
+    background_color='black',     #1
+    physics=SpacePhysics)         #2
     
-  class SpaceSprite(SpriteNode):
+  class SpaceRock(SpriteNode):    #3
     
     def __init__(self, **kwargs):
       super().__init__(**kwargs)
-      self.angular_damping = 0
+      self.angular_velocity = random.random()*4-2
+      self.touch_enabled = True   #4
+      
+    def touch_ended(self, touch): #4
+      self.velocity = (
+        random.randint(-100, 100),
+        random.randint(-100, 100)
+      )
     
-  ship = SpaceSprite(
+  ship = SpriteNode(
     image=ui.Image('spc:EnemyBlue2'), 
-    position=(-50,300),
-    rotation=math.pi/2,
-    velocity=(100,0),
-    #alpha=0.0,
+    position=(150,600),
+    velocity=(0, -100),          #5
     parent=scene)
     
-  rock = SpaceSprite(
+  rock = SpaceRock(
     image=ui.Image('spc:MeteorGrayBig3'), 
-    position=(425,320),
-    velocity=(-100,0),
-    angular_velocity=2,
-    #alpha=0.0,
+    position=(170,100),
+    velocity=(0,100),
     parent=scene)
     
   scene.view.present()
